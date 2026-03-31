@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import io
-import sys
-from pathlib import Path
 from typing import Dict
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import seaborn as sns
 import streamlit as st
@@ -15,38 +12,26 @@ from sklearn.metrics import RocCurveDisplay, average_precision_score, roc_auc_sc
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
-try:
-    from app.config import (
-        CLASSIFICATION_THRESHOLD,
-        HIGH_RISK_THRESHOLD,
-        ID_COLUMN,
-        LOW_RISK_THRESHOLD,
-        RANDOM_STATE,
-        TARGET_COLUMN,
-        TEST_SIZE,
-    )
-    from app.features import build_preprocessor, normalize_churn_target
-    from app.modeling import build_classifier, prepare_features
-    from app.risk import map_risk_level, to_binary_label
-except ModuleNotFoundError:
-    project_root = Path(__file__).resolve().parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    from app.config import (
-        CLASSIFICATION_THRESHOLD,
-        HIGH_RISK_THRESHOLD,
-        ID_COLUMN,
-        LOW_RISK_THRESHOLD,
-        RANDOM_STATE,
-        TARGET_COLUMN,
-        TEST_SIZE,
-    )
-    from app.features import build_preprocessor, normalize_churn_target
-    from app.modeling import build_classifier, prepare_features
-    from app.risk import map_risk_level, to_binary_label
+from app.config import (
+    CLASSIFICATION_THRESHOLD,
+    HIGH_RISK_THRESHOLD,
+    ID_COLUMN,
+    LOW_RISK_THRESHOLD,
+    RANDOM_STATE,
+    TARGET_COLUMN,
+    TEST_SIZE,
+)
+from app.features import add_features, build_preprocessor, normalize_churn_target
+from app.modeling import build_classifier, prepare_features
+from app.risk import map_risk_level, to_binary_label
 
 
 sns.set_theme(style="whitegrid")
+
+
+@st.cache_data(show_spinner=False)
+def _read_uploaded_csv(file_bytes: bytes) -> pd.DataFrame:
+    return pd.read_csv(io.BytesIO(file_bytes))
 
 
 def summarize_dataset(df: pd.DataFrame, name: str) -> None:
@@ -65,6 +50,7 @@ def summarize_dataset(df: pd.DataFrame, name: str) -> None:
     st.dataframe(miss)
 
 
+@st.cache_data(show_spinner=False)
 def numeric_statistics(df: pd.DataFrame) -> pd.DataFrame:
     numeric_cols = df.select_dtypes(include=["number", "bool"]).columns.tolist()
     if not numeric_cols:
@@ -79,6 +65,7 @@ def numeric_statistics(df: pd.DataFrame) -> pd.DataFrame:
     return stats
 
 
+@st.cache_data(show_spinner=False)
 def iqr_outlier_table(df: pd.DataFrame) -> pd.DataFrame:
     numeric_cols = df.select_dtypes(include=["number", "bool"]).columns.tolist()
     if not numeric_cols:
@@ -112,6 +99,7 @@ def iqr_outlier_table(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(records).sort_values("outlier_rate_pct", ascending=False)
 
 
+@st.cache_data(show_spinner=False)
 def isolation_forest_outlier_rate(df: pd.DataFrame, sample_size: int = 50000) -> Dict[str, float]:
     numeric_cols = df.select_dtypes(include=["number", "bool"]).columns.tolist()
     if not numeric_cols:
@@ -132,9 +120,23 @@ def isolation_forest_outlier_rate(df: pd.DataFrame, sample_size: int = 50000) ->
     }
 
 
+def _align_with_pipeline(pipeline: Pipeline, X: pd.DataFrame) -> pd.DataFrame:
+    preprocessor = pipeline.named_steps.get("preprocessor")
+    expected = list(getattr(preprocessor, "feature_names_in_", [])) if preprocessor is not None else []
+    if not expected:
+        return X
+
+    aligned = X.copy()
+    for col in expected:
+        if col not in aligned.columns:
+            aligned[col] = pd.NA
+    return aligned.reindex(columns=expected)
+
+
 def train_and_evaluate(train_df: pd.DataFrame):
-    y = normalize_churn_target(train_df[TARGET_COLUMN])
-    X = prepare_features(train_df)
+    train_fe = add_features(train_df)
+    y = normalize_churn_target(train_fe[TARGET_COLUMN])
+    X = prepare_features(train_fe)
 
     X_train, X_valid, y_train, y_valid = train_test_split(
         X,
@@ -161,7 +163,9 @@ def train_and_evaluate(train_df: pd.DataFrame):
 
 
 def prediction_outputs(pipeline: Pipeline, test_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    X_test = prepare_features(test_df)
+    test_fe = add_features(test_df)
+    X_test = prepare_features(test_fe)
+    X_test = _align_with_pipeline(pipeline, X_test)
     test_proba = pd.Series(pipeline.predict_proba(X_test)[:, 1], name="churn_probability", index=test_df.index)
 
     risk = map_risk_level(test_proba, low_threshold=LOW_RISK_THRESHOLD, high_threshold=HIGH_RISK_THRESHOLD)
@@ -198,8 +202,8 @@ def run_app() -> None:
         st.info("Please upload both train.csv and test.csv to continue.")
         return
 
-    train_df = pd.read_csv(train_file)
-    test_df = pd.read_csv(test_file)
+    train_df = _read_uploaded_csv(train_file.getvalue())
+    test_df = _read_uploaded_csv(test_file.getvalue())
 
     missing_cols = [c for c in [TARGET_COLUMN, ID_COLUMN] if c not in train_df.columns]
     if missing_cols:
@@ -283,6 +287,9 @@ def run_app() -> None:
                 file_name="predictions_with_risk.csv",
                 mime="text/csv",
             )
+
+    with st.expander("Deploy Command", expanded=False):
+        st.code("python -m streamlit run app/streamlit_app.py", language="bash")
 
 
 if __name__ == "__main__":

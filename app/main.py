@@ -13,6 +13,18 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Pipeline stage to execute",
     )
+    parser.add_argument(
+        "--train-mode",
+        choices=["full", "fast"],
+        default="full",
+        help="Training benchmark mode: full (all models) or fast (subset of models)",
+    )
+    parser.add_argument(
+        "--cv-splits",
+        type=int,
+        default=None,
+        help="Override CV folds used in training benchmark",
+    )
     return parser.parse_args()
 
 
@@ -20,7 +32,7 @@ def main() -> None:
     args = parse_args()
 
     if args.stage in {"train", "all"}:
-        metrics = run_train()
+        metrics = run_train(mode=args.train_mode, cv_splits=args.cv_splits)
         print("Validation metrics:")
         print(metrics)
 
