@@ -8,7 +8,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY app ./app
 COPY data ./data
+COPY streamlit_app.py ./streamlit_app.py
 
 RUN mkdir -p /workspace/models /workspace/output
+
+EXPOSE 8501
 
 CMD ["python", "-m", "app.main", "--stage", "all"]

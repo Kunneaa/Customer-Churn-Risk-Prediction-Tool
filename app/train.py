@@ -9,6 +9,9 @@ from app.modeling import train_pipeline
 
 
 def run_train(mode: str = "full", cv_splits: int | None = None, verbose: bool = True) -> dict[str, object]:
+    if not TRAIN_FILE.exists():
+        raise FileNotFoundError(f"Training file not found: {TRAIN_FILE}")
+
     train_df = pd.read_csv(TRAIN_FILE)
     effective_cv = cv_splits if cv_splits is not None else (3 if mode == "fast" else 5)
     if effective_cv < 2:

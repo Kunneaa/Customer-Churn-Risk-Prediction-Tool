@@ -15,6 +15,6 @@ services:
     container_name: churn-risk-web
     volumes:
       - ..:/workspace
-    command: streamlit run app/web_app.py --server.address 0.0.0.0 --server.port 8501
+    command: streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501
     ports:
       - "8501:8501"

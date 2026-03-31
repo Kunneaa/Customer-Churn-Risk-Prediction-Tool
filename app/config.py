@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -21,9 +22,12 @@ SUBMISSION_FILE = OUTPUT_DIR / "submission.csv"
 
 TARGET_COLUMN = "Churn"
 ID_COLUMN = "id"
+CHURN_PROBABILITY_COLUMN = "churn_probability"
+RISK_LEVEL_COLUMN = "risk_level"
 
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
+PARALLEL_JOBS = int(os.getenv("CHURN_N_JOBS", "1"))
 
 LOW_RISK_THRESHOLD = 0.33
 HIGH_RISK_THRESHOLD = 0.66

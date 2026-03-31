@@ -8,25 +8,21 @@ import pandas as pd
 import seaborn as sns
 import streamlit as st
 from sklearn.ensemble import IsolationForest
-from sklearn.metrics import RocCurveDisplay, average_precision_score, roc_auc_score
+from sklearn.metrics import RocCurveDisplay
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
-from app.config import (
-    CLASSIFICATION_THRESHOLD,
-    HIGH_RISK_THRESHOLD,
-    ID_COLUMN,
-    LOW_RISK_THRESHOLD,
-    RANDOM_STATE,
-    TARGET_COLUMN,
-    TEST_SIZE,
-)
-from app.features import add_features, build_preprocessor, normalize_churn_target
-from app.modeling import build_classifier, prepare_features
-from app.risk import map_risk_level, to_binary_label
+from app.config import ID_COLUMN, RANDOM_STATE, TARGET_COLUMN, TEST_SIZE
+from app.features import prepare_training_data
+from app.modeling import evaluate_scores, fit_best_pipeline, select_model_features
+from app.predict import predict_with_risk
 
 
 sns.set_theme(style="whitegrid")
+
+
+def _numeric_columns(df: pd.DataFrame) -> list[str]:
+    return df.select_dtypes(include=["number", "bool"]).columns.tolist()
 
 
 @st.cache_data(show_spinner=False)
@@ -52,7 +48,7 @@ def summarize_dataset(df: pd.DataFrame, name: str) -> None:
 
 @st.cache_data(show_spinner=False)
 def numeric_statistics(df: pd.DataFrame) -> pd.DataFrame:
-    numeric_cols = df.select_dtypes(include=["number", "bool"]).columns.tolist()
+    numeric_cols = _numeric_columns(df)
     if not numeric_cols:
         return pd.DataFrame()
 
@@ -67,7 +63,7 @@ def numeric_statistics(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def iqr_outlier_table(df: pd.DataFrame) -> pd.DataFrame:
-    numeric_cols = df.select_dtypes(include=["number", "bool"]).columns.tolist()
+    numeric_cols = _numeric_columns(df)
     if not numeric_cols:
         return pd.DataFrame()
 
@@ -101,7 +97,7 @@ def iqr_outlier_table(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def isolation_forest_outlier_rate(df: pd.DataFrame, sample_size: int = 50000) -> Dict[str, float]:
-    numeric_cols = df.select_dtypes(include=["number", "bool"]).columns.tolist()
+    numeric_cols = _numeric_columns(df)
     if not numeric_cols:
         return {"sample_rows": 0, "outlier_rows": 0, "outlier_rate_pct": 0.0}
 
@@ -120,23 +116,12 @@ def isolation_forest_outlier_rate(df: pd.DataFrame, sample_size: int = 50000) ->
     }
 
 
-def _align_with_pipeline(pipeline: Pipeline, X: pd.DataFrame) -> pd.DataFrame:
-    preprocessor = pipeline.named_steps.get("preprocessor")
-    expected = list(getattr(preprocessor, "feature_names_in_", [])) if preprocessor is not None else []
-    if not expected:
-        return X
-
-    aligned = X.copy()
-    for col in expected:
-        if col not in aligned.columns:
-            aligned[col] = pd.NA
-    return aligned.reindex(columns=expected)
-
-
-def train_and_evaluate(train_df: pd.DataFrame):
-    train_fe = add_features(train_df)
-    y = normalize_churn_target(train_fe[TARGET_COLUMN])
-    X = prepare_features(train_fe)
+def train_and_evaluate(
+    train_df: pd.DataFrame,
+    mode: str = "full",
+    cv_splits: int = 3,
+) -> tuple[Pipeline, dict[str, float | int | str], pd.Series, pd.Series]:
+    X, y = prepare_training_data(train_df)
 
     X_train, X_valid, y_train, y_valid = train_test_split(
         X,
@@ -146,41 +131,34 @@ def train_and_evaluate(train_df: pd.DataFrame):
         stratify=y,
     )
 
-    pipeline = Pipeline(
-        steps=[
-            ("preprocessor", build_preprocessor(X_train)),
-            ("model", build_classifier()),
-        ]
+    X_train_selected, used_features = select_model_features(X_train)
+    X_valid_selected = X_valid.reindex(columns=used_features).copy()
+
+    pipeline, benchmark_metrics = fit_best_pipeline(
+        X_train_selected,
+        y_train,
+        mode=mode,
+        cv_splits=cv_splits,
+        verbose=False,
     )
-    pipeline.fit(X_train, y_train)
 
-    valid_proba = pipeline.predict_proba(X_valid)[:, 1]
-    metrics = {
-        "roc_auc": float(roc_auc_score(y_valid, valid_proba)),
-        "average_precision": float(average_precision_score(y_valid, valid_proba)),
-    }
-    return pipeline, metrics, y_valid, valid_proba
-
-
-def prediction_outputs(pipeline: Pipeline, test_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    test_fe = add_features(test_df)
-    X_test = prepare_features(test_fe)
-    X_test = _align_with_pipeline(pipeline, X_test)
-    test_proba = pd.Series(pipeline.predict_proba(X_test)[:, 1], name="churn_probability", index=test_df.index)
-
-    risk = map_risk_level(test_proba, low_threshold=LOW_RISK_THRESHOLD, high_threshold=HIGH_RISK_THRESHOLD)
-    churn_bin = to_binary_label(test_proba, threshold=CLASSIFICATION_THRESHOLD)
-
-    pred_df = pd.DataFrame(
+    valid_proba = pd.Series(
+        pipeline.predict_proba(X_valid_selected)[:, 1],
+        index=y_valid.index,
+        name="validation_probability",
+    )
+    metrics = evaluate_scores(y_valid, valid_proba)
+    metrics.update(
         {
-            ID_COLUMN: test_df[ID_COLUMN],
-            "churn_probability": test_proba,
-            "risk_level": risk,
-            TARGET_COLUMN: churn_bin,
+            "selected_model": str(benchmark_metrics["selected_model"]),
+            "train_mode": str(benchmark_metrics["train_mode"]),
+            "cv_splits": int(benchmark_metrics["cv_splits"]),
+            "n_candidates": int(benchmark_metrics["n_candidates"]),
+            "benchmark_cv_roc_auc_mean": float(benchmark_metrics["cv_roc_auc_mean"]),
+            "benchmark_cv_ap_mean": float(benchmark_metrics["cv_ap_mean"]),
         }
     )
-    submission_df = pred_df[[ID_COLUMN, TARGET_COLUMN]].copy()
-    return pred_df, submission_df
+    return pipeline, metrics, y_valid, valid_proba
 
 
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
@@ -255,22 +233,48 @@ def run_app() -> None:
                 sns.histplot(train_df[col], kde=True, ax=ax)
                 ax.set_title(f"Distribution of {col}")
             st.pyplot(fig)
+            plt.close(fig)
 
     with tab3:
+        st.subheader("Model Selection")
+        train_mode = st.radio(
+            "Search mode",
+            options=["fast", "full"],
+            index=1,
+            horizontal=True,
+            help="full benchmarks more candidate models and usually takes longer; fast searches a smaller shortlist.",
+        )
+        cv_splits = st.select_slider(
+            "CV folds for model selection",
+            options=[2, 3, 4, 5],
+            value=3,
+        )
+
         if st.button("Train Model and Generate Outputs", type="primary"):
             with st.spinner("Training model and generating predictions..."):
-                pipeline, metrics, y_valid, valid_proba = train_and_evaluate(train_df)
-                pred_df, submission_df = prediction_outputs(pipeline, test_df)
+                pipeline, metrics, y_valid, valid_proba = train_and_evaluate(
+                    train_df,
+                    mode=train_mode,
+                    cv_splits=int(cv_splits),
+                )
+                pred_df, submission_df = predict_with_risk(pipeline, test_df)
 
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             c1.metric("ROC-AUC", f"{metrics['roc_auc']:.4f}")
             c2.metric("Average Precision", f"{metrics['average_precision']:.4f}")
+            c3.metric("Selected Model", str(metrics["selected_model"]))
+            st.caption(
+                f"Model search used `{metrics['train_mode']}` mode with `{metrics['cv_splits']}` CV folds "
+                f"across `{metrics['n_candidates']}` candidates. "
+                f"Best benchmark ROC-AUC: `{metrics['benchmark_cv_roc_auc_mean']:.4f}`."
+            )
 
             st.subheader("ROC Curve")
             fig, ax = plt.subplots(figsize=(7, 5))
             RocCurveDisplay.from_predictions(y_valid, valid_proba, ax=ax)
             ax.set_title("Validation ROC Curve")
             st.pyplot(fig)
+            plt.close(fig)
 
             st.subheader("Predictions with Risk")
             st.dataframe(pred_df.head(30))
@@ -289,7 +293,7 @@ def run_app() -> None:
             )
 
     with st.expander("Deploy Command", expanded=False):
-        st.code("python -m streamlit run app/streamlit_app.py", language="bash")
+        st.code("streamlit run streamlit_app.py", language="bash")
 
 
 if __name__ == "__main__":

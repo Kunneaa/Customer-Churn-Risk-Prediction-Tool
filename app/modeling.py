@@ -7,30 +7,21 @@ from typing import Dict, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
-from app.config import ID_COLUMN, RANDOM_STATE, SELECTED_FEATURES_FILE, TARGET_COLUMN
-from app.features import add_features, build_preprocessor, normalize_churn_target
+from app.config import PARALLEL_JOBS, RANDOM_STATE, SELECTED_FEATURES_FILE
+from app.features import build_preprocessor, prepare_training_data
 
 
 def build_classifier() -> LogisticRegression:
     return LogisticRegression(max_iter=3000, class_weight="balanced", random_state=RANDOM_STATE)
-
-
-def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if TARGET_COLUMN in out.columns:
-        out = out.drop(columns=[TARGET_COLUMN])
-    if ID_COLUMN in out.columns:
-        out = out.drop(columns=[ID_COLUMN])
-    return out
 
 
 def load_selected_features() -> list[str]:
@@ -62,7 +53,7 @@ def _candidate_models(mode: str = "full") -> list[tuple[str, object, bool]]:
                 n_estimators=400,
                 max_depth=10,
                 min_samples_leaf=5,
-                n_jobs=-1,
+                n_jobs=PARALLEL_JOBS,
             ),
             False,
         ),
@@ -100,12 +91,12 @@ def _candidate_models(mode: str = "full") -> list[tuple[str, object, bool]]:
                     objective="binary:logistic",
                     eval_metric="logloss",
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=PARALLEL_JOBS,
                 ),
                 False,
             )
         )
-    except Exception:
+    except ImportError:
         pass
 
     try:
@@ -125,7 +116,7 @@ def _candidate_models(mode: str = "full") -> list[tuple[str, object, bool]]:
                 False,
             )
         )
-    except Exception:
+    except ImportError:
         pass
 
     return specs
@@ -141,21 +132,19 @@ def _filter_selected_columns(X: pd.DataFrame, selected_features: Sequence[str]) 
     return X[kept].copy(), kept
 
 
-def train_pipeline(
-    train_df: pd.DataFrame,
+def select_model_features(X: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    return _filter_selected_columns(X, load_selected_features())
+
+
+def fit_best_pipeline(
+    X: pd.DataFrame,
+    y: pd.Series,
     mode: str = "full",
     cv_splits: int = 5,
     verbose: bool = True,
 ) -> Tuple[Pipeline, Dict[str, object]]:
     if cv_splits < 2:
         raise ValueError("cv_splits must be >= 2")
-
-    train_fe = add_features(train_df)
-    y = normalize_churn_target(train_fe[TARGET_COLUMN])
-    X_all = prepare_features(train_fe)
-
-    selected_features = load_selected_features()
-    X, used_features = _filter_selected_columns(X_all, selected_features)
 
     cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=RANDOM_STATE)
     model_specs = _candidate_models(mode=mode)
@@ -187,7 +176,7 @@ def train_pipeline(
             y,
             cv=cv,
             scoring={"auc": "roc_auc", "ap": "average_precision"},
-            n_jobs=-1,
+            n_jobs=PARALLEL_JOBS,
             return_train_score=False,
         )
         elapsed = time.perf_counter() - started
@@ -226,9 +215,20 @@ def train_pipeline(
         "cv_roc_auc_std": best_auc_std,
         "cv_ap_mean": best_cv_ap,
         "cv_ap_std": best_ap_std,
-        "n_features_used": int(len(used_features)),
+        "n_features_used": int(X.shape[1]),
         "n_candidates": int(len(model_specs)),
         "train_mode": mode,
         "cv_splits": int(cv_splits),
     }
     return best_pipeline, metrics
+
+
+def train_pipeline(
+    train_df: pd.DataFrame,
+    mode: str = "full",
+    cv_splits: int = 5,
+    verbose: bool = True,
+) -> Tuple[Pipeline, Dict[str, object]]:
+    X_all, y = prepare_training_data(train_df)
+    X, _ = select_model_features(X_all)
+    return fit_best_pipeline(X, y, mode=mode, cv_splits=cv_splits, verbose=verbose)
