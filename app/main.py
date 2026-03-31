@@ -5,6 +5,7 @@ import argparse
 from app.predict import run_predict
 from app.train import run_train
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Customer churn risk prediction pipeline")
     parser.add_argument(
@@ -14,16 +15,10 @@ def parse_args() -> argparse.Namespace:
         help="Pipeline stage to execute",
     )
     parser.add_argument(
-        "--train-mode",
-        choices=["full", "fast"],
-        default="full",
-        help="Training benchmark mode: full (all models) or fast (subset of models)",
-    )
-    parser.add_argument(
         "--cv-splits",
         type=int,
         default=None,
-        help="Override CV folds used in training benchmark",
+        help="Override CV folds used to evaluate the RandomForest model",
     )
     return parser.parse_args()
 
@@ -32,7 +27,7 @@ def main() -> None:
     args = parse_args()
 
     if args.stage in {"train", "all"}:
-        metrics = run_train(mode=args.train_mode, cv_splits=args.cv_splits)
+        metrics = run_train(cv_splits=args.cv_splits)
         print("Validation metrics:")
         print(metrics)
 

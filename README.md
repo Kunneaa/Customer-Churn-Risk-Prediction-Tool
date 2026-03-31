@@ -6,8 +6,7 @@ End-to-end machine learning project for telecom churn prediction, risk segmentat
 
 This repository covers the full churn workflow:
 
-- Train a churn classifier from `data/train.csv`
-- Benchmark multiple model families in CLI training mode
+- Train a fixed `RandomForest` churn classifier from `data/train.csv`
 - Score `data/test.csv`
 - Convert churn probability into `Low Risk`, `Medium Risk`, and `High Risk`
 - Export business-ready CSV outputs
@@ -19,7 +18,7 @@ After a successful run, the project generates:
 
 - `models/churn_model.joblib`: trained sklearn pipeline
 - `models/metrics.json`: training and cross-validation summary
-- `models/model_benchmark.json`: reduced benchmark snapshot
+- `models/model_benchmark.json`: reduced cross-validation snapshot
 - `output/predictions_with_risk.csv`: `id`, churn probability, risk level, binary label
 - `output/submission.csv`: `id`, `Churn`
 
@@ -105,12 +104,11 @@ Implemented with sklearn transformers:
 
 CLI training is handled by `app/train.py` and `app/modeling.py`.
 
-Supported modes:
+The training flow uses a single model only:
 
-- `full`: benchmark the full candidate set
-- `fast`: benchmark a smaller subset for quicker iteration
+- `RandomForestClassifier`
 
-The training benchmark selects the best model by mean cross-validated ROC-AUC, then fits that model on the full training set and saves the pipeline artifact.
+Training runs cross-validation for evaluation, then fits the final RandomForest pipeline on the full training set and saves the artifact.
 
 ### 4. Prediction
 
@@ -136,7 +134,6 @@ Implemented in `app/risk.py`:
 Based on the checked-in `models/metrics.json`, the latest saved run in this repository reports:
 
 - selected model: `RandomForest`
-- train mode: `fast`
 - CV folds: `3`
 - mean CV ROC-AUC: `0.9122`
 - mean CV average precision: `0.7418`
@@ -167,16 +164,10 @@ Run the full pipeline:
 python -m app --stage all
 ```
 
-Run the full pipeline in quicker benchmark mode:
-
-```bash
-python -m app --stage all --train-mode fast
-```
-
 Run training only:
 
 ```bash
-python -m app --stage train --train-mode fast
+python -m app --stage train
 ```
 
 Run prediction only using an existing model artifact:
@@ -188,13 +179,13 @@ python -m app --stage predict
 Optional training flag:
 
 ```bash
-python -m app --stage train --train-mode fast --cv-splits 2
+python -m app --stage train --cv-splits 2
 ```
 
 Notes:
 
 - `--stage predict` requires `models/churn_model.joblib`
-- `full` mode can take noticeably longer because it benchmarks more candidates
+- the project now trains a single `RandomForest` model path
 
 ## Streamlit App
 
@@ -213,9 +204,8 @@ http://localhost:8501
 The UI supports:
 
 - upload of `train.csv` and `test.csv`
-- dataset summary and missing-value review
-- numeric statistics and outlier analysis
-- train/validation evaluation with ROC curve
+- chart-based deep analytics: class mix, distributions, segmentation, correlation, and outlier diagnostics
+- train/validation evaluation with ROC curve using `RandomForest`
 - download of `submission.csv` and `predictions_with_risk.csv`
 
 Legacy compatibility entrypoint:
@@ -283,7 +273,7 @@ streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501
 Run training first:
 
 ```bash
-python -m app --stage train --train-mode fast
+python -m app --stage train
 ```
 
 ### Prediction output looks stale
@@ -295,7 +285,7 @@ The repository already contains generated artifacts in `models/` and `output/`. 
 - `app/main.py`: CLI entrypoint for `train`, `predict`, or `all`
 - `app/train.py`: model training and artifact persistence
 - `app/predict.py`: batch scoring and CSV export
-- `app/modeling.py`: candidate model selection and benchmark logic
+- `app/modeling.py`: RandomForest pipeline construction and CV evaluation
 - `app/features.py`: feature engineering and preprocessing setup
 - `app/streamlit_app.py`: Streamlit UI implementation
 - `streamlit_app.py`: deployment-friendly root launcher
@@ -303,6 +293,6 @@ The repository already contains generated artifacts in `models/` and `output/`. 
 
 ## Suggested Workflow
 
-1. Run `python -m app --stage train --train-mode fast` for a quick benchmark.
+1. Run `python -m app --stage train` to train the RandomForest pipeline.
 2. Run `python -m app --stage predict` to refresh output files.
 3. Launch `streamlit run streamlit_app.py` for interactive analysis and downloadable outputs.
